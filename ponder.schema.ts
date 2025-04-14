@@ -1,6 +1,8 @@
 import { onchainTable } from "ponder";
 
-export const example = onchainTable("example", (t) => ({
+export const balanceHistory = onchainTable("balanceHistory", (t) => ({
   id: t.text().primaryKey(),
-  name: t.text(),
+  timestamp: t.bigint().notNull(),
+  balance: t.bigint().notNull(),
+  blockNumber: t.bigint().notNull(),
 }));
