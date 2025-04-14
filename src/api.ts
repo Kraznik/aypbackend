@@ -17,9 +17,15 @@ app.get("/api/balance-history", async (c) => {
   const balanceHistory = await db
     .select()
     .from(schema.balanceHistory)
-    .orderBy(schema.balanceHistory.timestamp.desc)
+    .orderBy(desc(schema.balanceHistory.timestamp))
     .limit(limit)
     .offset(offset);
+
+  // Get total count for pagination
+  const totalResult = await db
+    .select({ count: sql`count(*)` })
+    .from(schema.balanceHistory);
+  const total = Number(totalResult[0]?.count || 0);
 
   return c.json({
     data: balanceHistory.map((entry) => ({
@@ -32,7 +38,7 @@ app.get("/api/balance-history", async (c) => {
     pagination: {
       limit,
       offset,
-      total: await db.count().from(schema.balanceHistory),
+      total,
     },
   });
 });
@@ -42,7 +48,7 @@ app.get("/api/latest-balance", async (c) => {
   const latestBalance = await db
     .select()
     .from(schema.balanceHistory)
-    .orderBy(schema.balanceHistory.timestamp.desc)
+    .orderBy(desc(schema.balanceHistory.timestamp))
     .limit(1);
 
   if (latestBalance.length === 0) {
@@ -59,7 +65,7 @@ app.get("/api/latest-balance", async (c) => {
   });
 });
 
-app.get("/account/:chainId/:address", async (c) => {
+app.get("/api/account/:chainId/:address", async (c) => {
   const chainId = parseInt(c.req.param("chainId"));
   const address = c.req.param("address") as `0x${string}`;
 
@@ -71,57 +77,51 @@ app.get("/account/:chainId/:address", async (c) => {
     return c.json({ error: "Invalid address" }, 400);
   }
 
-  const client = publicClients[chainId as keyof typeof publicClients] as PublicClient;
+  const client = publicClients[
+    chainId as keyof typeof publicClients
+  ] as PublicClient;
   if (!client) {
     return c.json({ error: "Chain not supported" }, 400);
   }
 
-  // Get the latest balance for the address
-  const latestBalance = await db
-    .select()
-    .from(schema.balanceHistory)
-    .orderBy(sql`${schema.balanceHistory.timestamp} DESC`)
-    .limit(1);
+  try {
+    // Get the current balance for the address
+    const currentBalance = await client.getBalance({ address });
 
-  if (!latestBalance || latestBalance.length === 0) {
-    return c.json({ error: "No balance data found" }, 404);
+    return c.json({
+      address,
+      chainId,
+      currentBalance: currentBalance.toString(),
+    });
+  } catch (error) {
+    console.error("Error fetching account balance:", error);
+    return c.json({ error: "Failed to fetch account balance" }, 500);
   }
-
-  const currentBalance = await client.getBalance({ address });
-  const balanceEntry = latestBalance[0];
-
-  if (!balanceEntry) {
-    return c.json({ error: "No balance data found" }, 404);
-  }
-
-  return c.json({ 
-    currentBalance: currentBalance.toString(),
-    latestBalance: {
-      timestamp: balanceEntry.timestamp.toString(),
-      balance: balanceEntry.balance.toString(),
-      blockNumber: balanceEntry.blockNumber.toString(),
-    }
-  });
 });
 
-app.get("/hot-trades", async (c) => {
-  const oneHourAgo = Date.now() - 1000 * 60 * 60;
-  
-  const trades = await db
-    .select()
-    .from(schema.balanceHistory)
-    .where(sql`${schema.balanceHistory.timestamp} >= ${oneHourAgo}`)
-    .orderBy(sql`${schema.balanceHistory.balance} DESC`)
-    .limit(10);
+app.get("/api/hot-trades", async (c) => {
+  try {
+    const oneHourAgo = BigInt(Math.floor(Date.now() / 1000) - 60 * 60);
 
-  return c.json({
-    data: trades.map(trade => ({
-      timestamp: trade.timestamp.toString(),
-      balance: trade.balance.toString(),
-      blockNumber: trade.blockNumber.toString(),
-      date: new Date(Number(trade.timestamp) * 1000).toISOString()
-    }))
-  });
+    const trades = await db
+      .select()
+      .from(schema.balanceHistory)
+      .where(sql`${schema.balanceHistory.timestamp} >= ${oneHourAgo}`)
+      .orderBy(desc(schema.balanceHistory.balance))
+      .limit(10);
+
+    return c.json({
+      data: trades.map((trade) => ({
+        timestamp: trade.timestamp.toString(),
+        balance: trade.balance.toString(),
+        blockNumber: trade.blockNumber.toString(),
+        date: new Date(Number(trade.timestamp) * 1000).toISOString(),
+      })),
+    });
+  } catch (error) {
+    console.error("Error fetching hot trades:", error);
+    return c.json({ error: "Failed to fetch hot trades" }, 500);
+  }
 });
 
 // Create an HTTP server from our Hono app
